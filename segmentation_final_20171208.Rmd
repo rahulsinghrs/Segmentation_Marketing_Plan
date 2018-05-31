@@ -1,0 +1,523 @@
+---
+title: "segmentation_analysis"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r}
+set.seed(1680)
+
+library(dplyr)
+library(ISLR)
+library(cluster)
+library(Rtsne)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+
+```{r}
+getwd()
+list.files()
+
+rc <- read.csv("raw_trips_final.csv")
+```
+
+
+```{r}
+# look at structure
+str(rc)
+
+# head
+head(rc)
+
+names(rc)
+```
+
+
+```{r}
+summary(rc)
+```
+
+
+```{r}
+# clean data
+rc$dep_month <- factor(rc$dep_month)
+rc$dep_dow <- factor(rc$dep_dow)
+rc$insurance <- factor(rc$insurance)
+
+```
+
+```{r}
+head(rc)
+```
+
+```{r}
+# drop unneeded variables
+rc <- rc %>%
+  select(-departuredate, -returndate, -purchasedate, -seats)
+```
+
+
+```{r}
+rc_vars <- rc %>%
+  select(id, Z_age, travel_companion, weekend_trip)
+```
+
+
+# calculate distance
+Defining (dis)similarity between observations
+Euclidean is only for continuous variables, and is not applicable for mixed variables.
+Gower distance can handle mixed data types.
+Gower distance: for each var type, a particular metric that works well for that type is used and scaled to fall between 0 and 1 (e.x. - Manhattan for quantiative intervals, rank & manhattan for ordinal, dice coefficietn for nominal a.k.a., categorical vars)
+
+
+```{r}
+gower_dist_rc <- daisy(rc_vars[,-1],
+                       metric = "gower")
+
+summary(gower_dist_rc)
+```
+
+```{r}
+gower_mat_rc <- as.matrix(gower_dist_rc)
+```
+
+```{r}
+# find best number of k clusters
+sil_width_rc <- c(NA)
+for(i in 2:8) {
+  pam_fit <- pam(gower_mat_rc,
+                 diss = T,
+                 k = i)
+  sil_width_rc[i] <- pam_fit$silinfo$avg.width
+}
+
+# plot silhouette
+qplot(x = c(1:8), y = sil_width_rc, geom = "point") +
+  geom_line()
+
+```
+
+```{r}
+# max silhoutte score and index
+max(sil_width_rc, na.rm = T)
+which.max(sil_width_rc)
+```
+
+
+```{r}
+pam_fit_rc <- pam(gower_dist_rc, diss = T,
+                  k = 4)
+
+pam_results_rc <- rc_vars %>%
+  select(-id) %>%
+  mutate(cluster = pam_fit_rc$clustering) %>%
+  group_by(cluster) %>%
+  do(the_summary = summary(.))
+
+pam_results_rc$the_summary
+```
+
+```{r}
+# find out what values are the medoids
+rc[pam_fit_rc$medoids,]
+```
+
+
+
+```{r}
+# create lower dimensional space to visualize many variables at the same time
+# here, t-SNE (t-distributed stochastic neighborhood embedding) is used
+tsne_obj_rc <- Rtsne(gower_dist_rc, is_distance = T)
+
+tsne_data_rc <- tsne_obj_rc$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(pam_fit_rc$clustering),
+         name = rc_vars$id)
+
+ggplot(aes(x = X, y = Y), data = tsne_data_rc) +
+  geom_point(aes(color = cluster))
+```
+
+
+```{r}
+# add the cluster number for each row back to the original dataset
+clu <- tsne_data_rc[,'cluster']
+
+rc <- rc %>%
+  mutate(cluster = clu)
+```
+
+
+```{r}
+head(rc, 3)
+```
+
+```{r}
+# rename each cluster by unique name
+rc$cluster <- as.character(rc$cluster)
+rc$cluster[rc$cluster == 1] <- "big_family_retreat"
+rc$cluster[rc$cluster == 2] <- "comfort_duo"
+rc$cluster[rc$cluster == 3] <- "young_family"
+rc$cluster[rc$cluster == 4] <- "young_and_free"
+rc$cluster <- as.factor(rc$cluster)
+```
+
+```{r}
+head(rc,4)
+```
+
+
+```{r}
+rc %>%
+  group_by(cluster) %>%
+  summarise(count = n(),
+            pert = count / dim(rc)[1]) 
+```
+
+
+# comparing with profiling variables
+```{r}
+ggplot(rc, aes(cluster, fill = travel_companion)) +
+  geom_bar() +
+  ggtitle("Travel companion by cluster")
+```
+
+```{r}
+ggplot(rc) +
+  geom_freqpoly(aes(age,..density.., color = cluster)) +
+  geom_freqpoly(aes(age, ..density..), linetype = 2) + 
+  ggtitle("Density of age distribution by cluster")
+```
+
+
+
+```{r}
+ggplot(rc,aes(cluster, age)) +
+  geom_boxplot() +
+  stat_summary(fun.y = mean, geom = 'point', color = I('red')) +
+  stat_summary(aes(label=sprintf("%0.2f",round(..y..,digits = 2))), 
+               fun.y=mean, geom="text", size=2, vjust = -1.5) +
+  ggtitle("Distribution of age by cluster") +
+  geom_hline(yintercept = mean(rc$age), color = I('blue'), linetype = 2)
+```
+
+```{r}
+rc %>%
+  group_by(cluster) %>%
+  summarise(median = median(age))
+```
+
+```{r}
+names(rc)
+```
+
+
+```{r}
+  ggplot(rc,aes(x= standard_holiday, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people going to standard holiday by cluster")
+
+```
+
+
+```{r}
+
+ggplot(subset(rc, standard_holiday == "True"), aes(x = standard_holiday, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count',
+            aes(label = ..count..),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,
+            size = 2) +
+  ggtitle("Number of people going on standard holiday months by cluster")
+```
+
+
+```{r}
+ggplot(rc) +
+  geom_freqpoly(aes(duration,..density.., color = cluster)) +
+  geom_freqpoly(aes(duration, ..density..), linetype = 2) + 
+  ggtitle("Density of trip duration distribution by cluster")
+```
+
+
+```{r}
+ggplot(rc,aes(cluster, duration)) +
+  geom_boxplot() + 
+  stat_summary(fun.y = mean, geom = 'point', color = I('red')) +
+  stat_summary(aes(label=sprintf("%0.2f",round(..y..,digits = 2))), 
+               fun.y=mean, geom="text", size=2, vjust = -1.5) +
+  ggtitle("Duration of trip by cluster") +
+  geom_hline(yintercept = mean(rc$duration), color = I('blue'),
+             linetype = 2)
+```
+
+```{r}
+  ggplot(rc,aes(x= weekend_trip, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people going on weekend trip by cluster")
+
+```
+
+```{r}
+ggplot(subset(rc, weekend_trip == "True"), aes(x = weekend_trip, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count',
+            aes(label = ..count..),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,
+            size = 2) +
+  ggtitle("Number of people going on weekend trip by cluster")
+```
+
+```{r}
+  ggplot(rc,aes(x= gender, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Gender proportion by cluster")
+```
+
+
+
+```{r}
+ggplot(rc) +
+  geom_bar(aes(cluster, fill = gender), position = 'dodge') +
+  ggtitle("Gender count by cluster")
+```
+
+```{r}
+  ggplot(rc,aes(x= children, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people accompanying children by cluster")
+```
+
+```{r}
+ggplot(subset(rc, children == "True"), aes(x = children, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count',
+            aes(label = ..count..),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,
+            size = 2) +
+  ggtitle("Number of people accompanying children by cluster")
+```
+
+
+```{r}
+ggplot(rc) +
+  geom_freqpoly(aes(purchase_lag,..density.., color = cluster)) +
+  geom_freqpoly(aes(purchase_lag, ..density..), linetype = 2) +
+  ggtitle("Density of purchase lag distribution by cluster")
+
+```
+
+```{r}
+ggplot(rc, aes(x = cluster, y =purchase_lag)) +
+  geom_boxplot() +
+  stat_summary(fun.y = mean, color = I('red'), geom = 'point') +
+  stat_summary(aes(label=sprintf("%0.2f",round(..y..,digits = 2))), 
+               fun.y=mean, geom="text", size=2, vjust = -1.5) +
+  geom_hline(yintercept = mean(rc$purchase_lag), color = I('blue'), linetype = 2) + 
+  ggtitle("Distribution of purchase lag by cluster")
+```
+
+
+```{r}
+ggplot(rc,aes(x= customer_type, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people for each customer type by cluster")
+```
+
+
+```{r}
+ggplot(rc) +
+  geom_bar(aes(cluster, fill = customer_type), position = 'dodge') +
+  ggtitle("Number of people for each customer type by cluster")
+```
+
+```{r}
+ggplot(rc,aes(x= car, y=..prop..,group = 1,fill = cluster)) + 
+    stat_count(show.legend = F) + 
+    facet_wrap(~cluster) +
+    geom_text(stat = 'count', 
+              aes(label = sprintf("%0.2f",
+                                  round(..prop.., digits = 2))),
+              vjust = -0.5, size = 1) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people renting car by cluster")
+```
+
+```{r}
+ggplot(subset(rc, car == "True"), aes(x = car, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count',
+            aes(label = ..count..),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,
+            size = 2) +
+  ggtitle("Number of people renting car by cluster")
+```
+
+
+
+```{r}
+ggplot(rc, aes(x=hotel, y=..prop..,group = 1,fill = cluster)) +
+  stat_count(show.legend = F) + 
+  facet_wrap(~cluster) +
+  geom_text(stat = 'count', 
+            aes(label = sprintf("%0.2f",
+                                round(..prop.., digits = 2))),
+            size = 2,
+            vjust = -0.5) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people renting hotel by cluster")
+```
+
+```{r}
+ggplot(subset(rc, hotel == 'True'),
+       aes(x = hotel, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count', 
+            aes(label = ..count..),
+            size = 2,
+            position = position_dodge(width = 0.9),
+            vjust = -0.5) +
+  ggtitle("Number of people renting hotel by cluster")
+```
+
+
+
+```{r}
+ggplot(rc, aes(x=insurance, y=..prop..,group = 1,fill = cluster)) +
+  stat_count(show.legend = F) + 
+  facet_wrap(~cluster) +
+  geom_text(stat = 'count', 
+            aes(label = sprintf("%0.2f",
+                                round(..prop.., digits = 2))),
+            size = 2,
+            vjust = -0.5) +
+  ylab("Proportion") +
+  ggtitle("Proportion of people with insurance by cluster")
+```
+
+```{r}
+ggplot(subset(rc, insurance == 'True'),
+       aes(x = insurance, fill = cluster)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count', 
+            aes(label = ..count..),
+            size = 2,
+            position = position_dodge(width = 0.9),
+            vjust = -0.5) +
+  ggtitle("Number of people with insurance by cluster")
+```
+
+
+```{r}
+grid.arrange(
+rc %>%
+  filter(cluster == "big_family_retreat") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_month, y= ..count../sum(..count..))) +
+  ylab(""),
+
+rc %>%
+  filter(cluster == "big_family_retreat") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_dow, y= ..count../sum(..count..))) +
+  ylab(""),
+ncol = 2,
+top = "Departure month and day of week proportion for 'Big family retreat' cluster")
+```
+
+```{r}
+grid.arrange(
+rc %>%
+  filter(cluster == "comfort_duo") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_month, y= ..count../sum(..count..))) +
+  ylab(""),
+
+rc %>%
+  filter(cluster == "comfort_duo") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_dow, y= ..count../sum(..count..))) +
+  ylab(""),
+ncol = 2,
+top = "Departure month and day of week proportion for 'Comfort duo' cluster")
+```
+
+```{r}
+grid.arrange(
+rc %>%
+  filter(cluster == "young_and_free") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_month, y= ..count../sum(..count..))) +
+  ylab(""),
+
+rc %>%
+  filter(cluster == "young_and_free") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_dow, y= ..count../sum(..count..)))+
+  ylab(""),
+ncol = 2,
+top = "Departure month and day of week proportion for 'Young and free' cluster")
+```
+
+```{r}
+grid.arrange(
+rc %>%
+  filter(cluster == "young_family") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_month, y= ..count../sum(..count..))) +
+  ylab(""),
+
+rc %>%
+  filter(cluster == "young_family") %>%
+  ggplot() +
+  geom_bar(aes(x = dep_dow, y= ..count../sum(..count..))) +
+  ylab(""),
+ncol = 2,
+top = "Departure month and day of week proportion for 'Young family' cluster")
+```
+
+
+
+```{r}
+write.csv(rc, "raw_trips_final.csv")
+```
+
